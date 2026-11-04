@@ -165,55 +165,51 @@ def execute_tool(name: str, args: dict) -> str:
 
     return json.dumps({"error": f"Ferramenta '{name}' não encontrada."})
 
+# ── Protocolo MCP (JSON-RPC 2.0) ─────────────────────────────────────────────
 
-# ── Protocolo MCP (STDIO, JSON-RPC 2.0) ─────────────────────────────────────
-
-def send(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
-
-
-def handle_request(req: dict) -> None:
+def process_request(req: dict):
+    """Processa uma requisição JSON-RPC e devolve a resposta (ou None)."""
     method = req.get("method", "")
     rid = req.get("id")
 
     if method == "initialize":
-        send({
+        return {
             "jsonrpc": "2.0", "id": rid,
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "mock-plaid-mcp", "version": "1.0.0"},
             },
-        })
+        }
 
-    elif method == "tools/list":
+    if method == "tools/list":
         tools = [
-            {
-                "name": name,
-                "description": meta["description"],
-                "inputSchema": meta["inputSchema"],
-            }
-            for name, meta in TOOLS.items()
+            {"name": n, "description": m["description"], "inputSchema": m["inputSchema"]}
+            for n, m in TOOLS.items()
         ]
-        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": tools}})
+        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": tools}}
 
-    elif method == "tools/call":
+    if method == "tools/call":
         params = req.get("params", {})
-        tool_name = params.get("name", "")
-        arguments = params.get("arguments", {})
-        content = execute_tool(tool_name, arguments)
-        send({
+        content = execute_tool(params.get("name", ""), params.get("arguments", {}))
+        return {
             "jsonrpc": "2.0", "id": rid,
             "result": {"content": [{"type": "text", "text": content}]},
-        })
+        }
 
-    elif method == "notifications/initialized":
-        pass  # nenhuma resposta necessária
+    if method == "notifications/initialized":
+        return None
 
-    else:
-        if rid is not None:
-            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
+    if rid is not None:
+        return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}}
+    return None
+
+
+# ── Modo STDIO (uso local) ───────────────────────────────────────────────────
+
+def send(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
 
 
 def main() -> None:
@@ -222,11 +218,43 @@ def main() -> None:
         if not line:
             continue
         try:
-            req = json.loads(line)
-            handle_request(req)
+            resp = process_request(json.loads(line))
+            if resp is not None:
+                send(resp)
         except json.JSONDecodeError:
             send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
 
 
+# ── Modo HTTP (Vercel) ───────────────────────────────────────────────────────
+
+try:
+    from flask import Flask, request, jsonify, Response
+
+    app = Flask(__name__)
+
+    @app.after_request
+    def add_cors(resp):
+        resp.headers["Access-Control-Allow-Origin"] = "*"  # restrinja ao domínio do frontend depois
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return resp
+
+    @app.get("/")
+    def health():
+        return jsonify({"status": "ok", "server": "mock-plaid-mcp"})
+
+    @app.route("/mcp", methods=["POST", "OPTIONS"])
+    def mcp_http():
+        if request.method == "OPTIONS":
+            return Response(status=204)
+        resp = process_request(request.get_json(force=True, silent=True) or {})
+        if resp is None:
+            return Response(status=202)
+        return jsonify(resp)
+except ImportError:
+    app = None  # Flask não instalado: só o modo STDIO funciona
+
+
 if __name__ == "__main__":
     main()
+
