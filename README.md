@@ -215,7 +215,7 @@ financial-chat/
 
 ## Endereço do app publicado
 
-> 🔗 *Adicionar URL após publicação (Vercel, Netlify, etc.)*
+> 🔗 **https://frontend-six-dusky-54.vercel.app**
 
 ---
 
